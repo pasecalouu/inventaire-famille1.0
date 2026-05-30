@@ -163,7 +163,7 @@ function LoginScreen({onLogin,loading}){
 
 // ── NavBar PC (en haut) ──────────────────────
 function NavBarPC({page,setPage,user,onLogout}){
-  const tabs=[{id:"inventaire",label:"Inventaire",icon:"📦"},{id:"recettes",label:"Recettes",icon:"👨‍🍳"},{id:"menu",label:"Menu",icon:"📅"}];
+  const tabs=[{id:"inventaire",label:"Inventaire",icon:"📦"},{id:"recettes",label:"Recettes",icon:"👨‍🍳"},{id:"menu",label:"Menu",icon:"📅"},{id:"courses",label:"Courses",icon:"🛒"}];
   return(
     <div style={{background:"#fff",borderBottom:"1px solid #e2e8f0",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 24px",position:"sticky",top:0,zIndex:100,boxShadow:"0 1px 8px rgba(0,0,0,0.05)"}}>
       <div style={{display:"flex"}}>
@@ -188,7 +188,7 @@ function NavBarPC({page,setPage,user,onLogout}){
 
 // ── NavBar Mobile (en bas) ───────────────────
 function NavBarMobile({page,setPage}){
-  const tabs=[{id:"inventaire",label:"Inventaire",icon:"📦"},{id:"recettes",label:"Recettes",icon:"👨‍🍳"},{id:"menu",label:"Menu",icon:"📅"}];
+  const tabs=[{id:"inventaire",label:"Inventaire",icon:"📦"},{id:"recettes",label:"Recettes",icon:"👨‍🍳"},{id:"menu",label:"Menu",icon:"📅"},{id:"courses",label:"Courses",icon:"🛒"}];
   return(
     <div style={{position:"fixed",bottom:0,left:0,right:0,background:"#fff",borderTop:"1px solid #e2e8f0",display:"flex",zIndex:100,boxShadow:"0 -4px 16px rgba(0,0,0,0.08)",paddingBottom:"env(safe-area-inset-bottom)"}}>
       {tabs.map(t=>(
@@ -796,6 +796,307 @@ function PageMenu({products,recettes,menuSemaine,isMobile}){
   );
 }
 
+// ── Page Liste de Courses ────────────────────
+function PageCourses({products,pieces,isMobile}){
+  const [liste,setListe]=useState([]); // [{id,nom,categorie,quantite,unite,qteType,piece,checked,source}]
+  const [coursesDB,setCoursesDB]=useState([]);
+  const [showAdd,setShowAdd]=useState(false);
+  const [newItem,setNewItem]=useState({nom:"",categorie:CATEGORIES[0],quantite:1,unite:"unité",qteType:"entier",fracPart:0,piece:pieces[0]||""});
+  const [filterCat,setFilterCat]=useState("Toutes");
+  const [showImport,setShowImport]=useState(false);
+
+  // Écoute Firebase pour la liste de courses partagée
+  useEffect(()=>{
+    const unsub=onSnapshot(collection(db,"courses"),s=>{
+      setCoursesDB(s.docs.map(d=>d.data()));
+    });
+    return unsub;
+  },[]);
+
+  // Produits manquants ou en alerte dans l'inventaire
+  const produitsMissing=products.filter(p=>
+    p.quantite<=0||(p.seuilAlerte&&p.quantite<=parseFloat(p.seuilAlerte))
+  );
+
+  // Ajouter un item manuellement
+  const addItem=async()=>{
+    if(!newItem.nom.trim())return alert("Nom obligatoire.");
+    const qte=newItem.qteType==="fraction"?parseFloat(newItem.quantite||0)+parseFloat(newItem.fracPart||0):parseFloat(newItem.quantite||0);
+    const item={id:mkId(),nom:newItem.nom,categorie:newItem.categorie,quantite:qte,unite:newItem.unite,qteType:newItem.qteType,piece:newItem.piece,checked:false,source:"manuel"};
+    await setDoc(doc(db,"courses",item.id),item);
+    setNewItem({nom:"",categorie:CATEGORIES[0],quantite:1,unite:"unité",qteType:"entier",fracPart:0,piece:pieces[0]||""});
+    setShowAdd(false);
+  };
+
+  // Importer les produits manquants
+  const importerManquants=async(selected)=>{
+    for(const p of selected){
+      const deja=coursesDB.find(c=>c.nom===p.nom&&!c.checked);
+      if(deja) continue;
+      const item={id:mkId(),nom:p.nom,categorie:p.categorie,quantite:p.seuilAlerte?Math.max(0,parseFloat(p.seuilAlerte)-p.quantite):1,unite:p.unite||"unité",qteType:p.qteType||"entier",piece:p.piece||"",checked:false,source:"inventaire"};
+      await setDoc(doc(db,"courses",item.id),item);
+    }
+    setShowImport(false);
+  };
+
+  // Cocher / décocher
+  const toggleCheck=async(item)=>{
+    await setDoc(doc(db,"courses",item.id),{...item,checked:!item.checked});
+  };
+
+  // Supprimer un item
+  const deleteItem=async(id)=>{ await deleteDoc(doc(db,"courses",id)); };
+
+  // Vider les cochés
+  const viderCoches=async()=>{
+    const coches=coursesDB.filter(c=>c.checked);
+    for(const c of coches) await deleteDoc(doc(db,"courses",c.id));
+  };
+
+  // Tout vider
+  const toutVider=async()=>{
+    if(!window.confirm("Vider toute la liste ?")) return;
+    for(const c of coursesDB) await deleteDoc(doc(db,"courses",c.id));
+  };
+
+  // ★ AJOUTER À L'INVENTAIRE les items cochés
+  const ajouterAInventaire=async()=>{
+    const coches=coursesDB.filter(c=>c.checked);
+    if(!coches.length) return alert("Cochez d'abord les articles achetés.");
+    for(const item of coches){
+      // Cherche si le produit existe déjà dans l'inventaire
+      const existing=products.find(p=>p.nom.toLowerCase()===item.nom.toLowerCase());
+      if(existing){
+        // Ajoute la quantité au produit existant
+        await setDoc(doc(db,"produits",existing.id),{...existing,quantite:existing.quantite+item.quantite});
+      } else {
+        // Crée un nouveau produit
+        const id=mkId();
+        await setDoc(doc(db,"produits",id),{
+          id,nom:item.nom,categorie:item.categorie,quantite:item.quantite,
+          unite:item.unite,qteType:item.qteType,piece:item.piece||pieces[0]||"Cuisine",
+          description:"",seuilAlerte:"",
+        });
+      }
+      // Supprime de la liste de courses
+      await deleteDoc(doc(db,"courses",item.id));
+    }
+    alert(`✅ ${coches.length} article${coches.length>1?"s":""} ajouté${coches.length>1?"s":""} à l'inventaire !`);
+  };
+
+  const filtered=coursesDB.filter(c=>filterCat==="Toutes"||c.categorie===filterCat);
+  const nonCoches=filtered.filter(c=>!c.checked);
+  const coches=filtered.filter(c=>c.checked);
+  const nbCoches=coursesDB.filter(c=>c.checked).length;
+
+  const [newFrac,setNewFrac]=useState(0);
+
+  return(
+    <div style={{paddingBottom:isMobile?90:0}}>
+      {/* Header orange */}
+      <div style={{background:"linear-gradient(135deg,#ea580c,#dc2626)",padding:isMobile?"20px 16px 16px":"24px 28px 20px",color:"#fff"}}>
+        <div style={{maxWidth:900,margin:"0 auto"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:isMobile?26:30}}>🛒</span>
+                <h1 style={{margin:0,fontSize:isMobile?22:26,fontWeight:800,fontFamily:F}}>Liste de Courses</h1>
+              </div>
+              <p style={{margin:"4px 0 0",opacity:0.8,fontSize:13,fontFamily:F}}>{coursesDB.length} article{coursesDB.length>1?"s":""} · {nbCoches} coché{nbCoches>1?"s":""} · sync 🔄</p>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <button onClick={()=>setShowImport(true)} style={{background:"rgba(255,255,255,0.15)",border:"1.5px solid rgba(255,255,255,0.3)",color:"#fff",borderRadius:12,padding:"10px 16px",cursor:"pointer",fontWeight:600,fontSize:14,fontFamily:F}}>⚠️ Manquants</button>
+              <button onClick={()=>setShowAdd(true)} style={{background:"#fff",color:"#ea580c",border:"none",borderRadius:12,padding:"10px 18px",cursor:"pointer",fontWeight:800,fontSize:15,fontFamily:F,boxShadow:"0 4px 12px rgba(0,0,0,0.15)"}}>+ Ajouter</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:900,margin:"0 auto",padding:isMobile?"16px":"24px 28px"}}>
+        {/* Actions globales */}
+        {coursesDB.length>0&&(
+          <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
+            {nbCoches>0&&(
+              <button onClick={ajouterAInventaire} style={{background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",borderRadius:12,padding:"12px 20px",cursor:"pointer",fontWeight:800,fontSize:15,fontFamily:F,boxShadow:"0 4px 12px rgba(21,128,61,0.3)",display:"flex",alignItems:"center",gap:8}}>
+                📦 Ajouter à l'inventaire ({nbCoches})
+              </button>
+            )}
+            {nbCoches>0&&(
+              <button onClick={viderCoches} style={{background:"#fff7ed",color:"#ea580c",border:"1.5px solid #fed7aa",borderRadius:12,padding:"12px 16px",cursor:"pointer",fontWeight:600,fontSize:14,fontFamily:F}}>
+                🗑️ Supprimer les cochés
+              </button>
+            )}
+            <button onClick={toutVider} style={{background:"#fff1f2",color:"#e11d48",border:"1.5px solid #fecdd3",borderRadius:12,padding:"12px 16px",cursor:"pointer",fontWeight:600,fontSize:14,fontFamily:F,marginLeft:"auto"}}>
+              Tout vider
+            </button>
+          </div>
+        )}
+
+        {/* Filtre catégorie */}
+        {coursesDB.length>0&&(
+          <div style={{marginBottom:16}}>
+            <select style={{...iS,width:isMobile?"100%":"220px"}} value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
+              <option value="Toutes">Toutes catégories</option>
+              {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Liste vide */}
+        {coursesDB.length===0&&(
+          <div style={{textAlign:"center",padding:"60px 20px",background:"#fff",borderRadius:20,border:"1.5px dashed #fed7aa"}}>
+            <div style={{fontSize:56,marginBottom:12}}>🛒</div>
+            <div style={{fontSize:18,fontWeight:700,color:"#334155",fontFamily:F,marginBottom:8}}>Liste de courses vide</div>
+            <p style={{color:"#94a3b8",fontFamily:F,fontSize:14,marginBottom:20}}>Ajoutez des articles manuellement ou importez les produits manquants de votre inventaire.</p>
+            <div style={{display:"flex",gap:10,justifyContent:"center",flexWrap:"wrap"}}>
+              <button onClick={()=>setShowImport(true)} style={{background:"#fff7ed",color:"#ea580c",border:"1.5px solid #fed7aa",borderRadius:12,padding:"12px 20px",cursor:"pointer",fontWeight:700,fontSize:14,fontFamily:F}}>⚠️ Voir les manquants</button>
+              <button onClick={()=>setShowAdd(true)} style={{background:"linear-gradient(135deg,#ea580c,#dc2626)",color:"#fff",border:"none",borderRadius:12,padding:"12px 20px",cursor:"pointer",fontWeight:700,fontSize:14,fontFamily:F}}>+ Ajouter manuellement</button>
+            </div>
+          </div>
+        )}
+
+        {/* Articles à acheter */}
+        {nonCoches.length>0&&(
+          <div style={{marginBottom:24}}>
+            <div style={{fontWeight:700,fontSize:14,color:"#475569",fontFamily:F,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:10}}>
+              À acheter — {nonCoches.length} article{nonCoches.length>1?"s":""}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {nonCoches.map(item=>(
+                <div key={item.id} style={{background:"#fff",border:"1.5px solid #e2e8f0",borderRadius:14,padding:"14px 16px",display:"flex",alignItems:"center",gap:14,boxShadow:"0 2px 6px rgba(0,0,0,0.04)"}}>
+                  <button onClick={()=>toggleCheck(item)} style={{width:26,height:26,borderRadius:999,border:"2px solid #e2e8f0",background:"#fff",cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}/>
+                  <div style={{width:44,height:44,background:"linear-gradient(135deg,#fff7ed,#fed7aa)",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{getEmoji(item.categorie)}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:15,color:"#1e293b",fontFamily:F}}>{item.nom}</div>
+                    <div style={{fontSize:12,color:"#64748b",fontFamily:F,marginTop:2}}>
+                      {item.categorie?.replace(/^[^\s]+ /,"")}
+                      {item.source==="inventaire"&&<span style={{marginLeft:6,background:"#ffedd5",color:"#c2410c",borderRadius:999,padding:"1px 7px",fontSize:11,fontWeight:600}}>stock bas</span>}
+                    </div>
+                  </div>
+                  <div style={{fontWeight:700,fontSize:15,color:"#ea580c",fontFamily:F,flexShrink:0}}>
+                    {formatQte(item.quantite,item.unite,item.qteType)}
+                  </div>
+                  <button onClick={()=>deleteItem(item.id)} style={{border:"none",background:"#fff1f2",borderRadius:8,padding:"7px 10px",cursor:"pointer",fontSize:14,color:"#e11d48",flexShrink:0}}>🗑️</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Articles cochés */}
+        {coches.length>0&&(
+          <div>
+            <div style={{fontWeight:700,fontSize:14,color:"#94a3b8",fontFamily:F,textTransform:"uppercase",letterSpacing:"0.05em",marginBottom:10}}>
+              ✅ Achetés — {coches.length}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {coches.map(item=>(
+                <div key={item.id} style={{background:"#f8fafc",border:"1.5px solid #e2e8f0",borderRadius:14,padding:"14px 16px",display:"flex",alignItems:"center",gap:14,opacity:0.65}}>
+                  <button onClick={()=>toggleCheck(item)} style={{width:26,height:26,borderRadius:999,border:"2px solid #16a34a",background:"#16a34a",cursor:"pointer",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#fff"}}>✓</button>
+                  <div style={{width:44,height:44,background:"#f1f5f9",borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{getEmoji(item.categorie)}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:15,color:"#64748b",fontFamily:F,textDecoration:"line-through"}}>{item.nom}</div>
+                    <div style={{fontSize:12,color:"#94a3b8",fontFamily:F}}>{formatQte(item.quantite,item.unite,item.qteType)}</div>
+                  </div>
+                  <button onClick={()=>deleteItem(item.id)} style={{border:"none",background:"#f1f5f9",borderRadius:8,padding:"7px 10px",cursor:"pointer",fontSize:14,color:"#94a3b8",flexShrink:0}}>🗑️</button>
+                </div>
+              ))}
+            </div>
+            {/* Bouton ajouter à l'inventaire en bas aussi */}
+            <button onClick={ajouterAInventaire} style={{width:"100%",marginTop:14,background:"linear-gradient(135deg,#16a34a,#15803d)",color:"#fff",border:"none",borderRadius:14,padding:"14px 0",cursor:"pointer",fontWeight:800,fontSize:16,fontFamily:F,boxShadow:"0 4px 12px rgba(21,128,61,0.3)"}}>
+              📦 Ajouter à l'inventaire ({coches.length} article{coches.length>1?"s":""})
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Modal ajout manuel */}
+      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="➕ Ajouter un article">
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:14,background:"#fff7ed",border:"1.5px solid #fed7aa",borderRadius:14,padding:"12px 16px",marginBottom:16}}>
+            <div style={{fontSize:40}}>{getEmoji(newItem.categorie)}</div>
+            <div style={{fontWeight:700,fontSize:15,color:"#1e293b",fontFamily:F}}>{newItem.nom||"Nom de l'article"}</div>
+          </div>
+          <Lbl label="Nom *"><input style={iS} value={newItem.nom} onChange={e=>setNewItem(x=>({...x,nom:e.target.value}))} placeholder="Ex : Lait, Pain, Shampoing..."/></Lbl>
+          <Lbl label="Catégorie"><select style={iS} value={newItem.categorie} onChange={e=>setNewItem(x=>({...x,categorie:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Lbl>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <Lbl label="Type"><select style={iS} value={newItem.qteType} onChange={e=>setNewItem(x=>({...x,qteType:e.target.value}))}>{QUANTITE_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}</select></Lbl>
+            <Lbl label="Unité"><select style={iS} value={newItem.unite} onChange={e=>setNewItem(x=>({...x,unite:e.target.value}))}>{UNITES.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select></Lbl>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:newItem.qteType==="fraction"?"1fr 1fr":"1fr",gap:12}}>
+            <Lbl label="Quantité"><input style={iS} type="number" min="0" value={newItem.quantite} onChange={e=>setNewItem(x=>({...x,quantite:e.target.value}))}/></Lbl>
+            {newItem.qteType==="fraction"&&<Lbl label="Fraction"><select style={iS} value={newFrac} onChange={e=>setNewFrac(e.target.value)}><option value={0}>Aucune</option>{FRACTIONS.map(x=><option key={x.label} value={x.value}>{x.label}</option>)}</select></Lbl>}
+          </div>
+          <Lbl label="Pièce de destination"><select style={iS} value={newItem.piece} onChange={e=>setNewItem(x=>({...x,piece:e.target.value}))}>{pieces.map(p=><option key={p}>{p}</option>)}</select></Lbl>
+          <div style={{display:"flex",gap:10,marginTop:8}}>
+            <button onClick={addItem} style={{...btnP,background:"linear-gradient(135deg,#ea580c,#dc2626)"}}>✅ Ajouter à la liste</button>
+            <button onClick={()=>setShowAdd(false)} style={btnS}>Annuler</button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal import manquants */}
+      <Modal open={showImport} onClose={()=>setShowImport(false)} title="⚠️ Produits manquants / en alerte">
+        <div>
+          {produitsMissing.length===0?(
+            <div style={{textAlign:"center",padding:"30px 0",color:"#64748b",fontFamily:F}}>
+              <div style={{fontSize:40,marginBottom:8}}>✅</div>
+              <div style={{fontWeight:600,fontSize:15}}>Tout votre inventaire est bien approvisionné !</div>
+            </div>
+          ):(
+            <>
+              <p style={{color:"#64748b",fontSize:14,fontFamily:F,marginBottom:16}}>Sélectionnez les produits à ajouter à votre liste de courses.</p>
+              <ImportManquants produits={produitsMissing} coursesDB={coursesDB} onImport={importerManquants} onCancel={()=>setShowImport(false)}/>
+            </>
+          )}
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+function ImportManquants({produits,coursesDB,onImport,onCancel}){
+  const [selected,setSelected]=useState(produits.map(p=>p.id));
+  const toggle=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const selAll=()=>setSelected(produits.map(p=>p.id));
+  const selNone=()=>setSelected([]);
+  return(
+    <div>
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <button onClick={selAll} style={{...btnS,padding:"8px 0",fontSize:13,flex:1}}>Tout sélectionner</button>
+        <button onClick={selNone} style={{...btnS,padding:"8px 0",fontSize:13,flex:1}}>Tout déselectionner</button>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16,maxHeight:340,overflowY:"auto"}}>
+        {produits.map(p=>{
+          const sel=selected.includes(p.id);
+          const dejaListe=coursesDB.find(c=>c.nom===p.nom&&!c.checked);
+          const empty=p.quantite<=0;
+          return(
+            <div key={p.id} onClick={()=>!dejaListe&&toggle(p.id)} style={{display:"flex",alignItems:"center",gap:12,background:sel?"#fff7ed":"#f8fafc",border:`1.5px solid ${sel?"#fed7aa":"#e2e8f0"}`,borderRadius:12,padding:"12px 14px",cursor:dejaListe?"not-allowed":"pointer",opacity:dejaListe?0.5:1}}>
+              <div style={{width:24,height:24,borderRadius:999,border:`2px solid ${sel?"#ea580c":"#e2e8f0"}`,background:sel?"#ea580c":"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"#fff",flexShrink:0}}>{sel?"✓":""}</div>
+              <div style={{fontSize:24}}>{getEmoji(p.categorie)}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14,color:"#1e293b",fontFamily:F}}>{p.nom}</div>
+                <div style={{fontSize:12,color:"#64748b",fontFamily:F,marginTop:1}}>
+                  Stock : <span style={{color:empty?"#ef4444":"#f97316",fontWeight:700}}>{formatQte(p.quantite,p.unite||"unité",p.qteType||"entier")}</span>
+                  {p.seuilAlerte&&<span style={{marginLeft:6}}>/ seuil : {p.seuilAlerte} {p.unite}</span>}
+                  {dejaListe&&<span style={{marginLeft:6,background:"#dbeafe",color:"#1e40af",borderRadius:999,padding:"1px 7px",fontSize:11,fontWeight:600}}>déjà dans la liste</span>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{display:"flex",gap:10}}>
+        <button onClick={()=>onImport(produits.filter(p=>selected.includes(p.id)))} disabled={!selected.length} style={{...btnP,background:"linear-gradient(135deg,#ea580c,#dc2626)",opacity:selected.length?1:0.5}}>
+          Ajouter {selected.length} article{selected.length>1?"s":""} à la liste
+        </button>
+        <button onClick={onCancel} style={btnS}>Annuler</button>
+      </div>
+    </div>
+  );
+}
+
 // ── App principale ───────────────────────────
 export default function App(){
   const isMobile=useIsMobile();
@@ -849,7 +1150,8 @@ export default function App(){
         {!isMobile&&<NavBarPC page={page} setPage={setPage} user={user} onLogout={()=>signOut(auth)}/>}
         {page==="inventaire"?<PageInventaire products={products} pieces={pieces} setPieces={setPieces} isMobile={isMobile}/>
         :page==="recettes"?<PageRecettes products={products} recettes={recettes} isMobile={isMobile}/>
-        :<PageMenu products={products} recettes={recettes} menuSemaine={menuSemaine} isMobile={isMobile}/>}
+        :page==="menu"?<PageMenu products={products} recettes={recettes} menuSemaine={menuSemaine} isMobile={isMobile}/>
+        :<PageCourses products={products} pieces={pieces} isMobile={isMobile}/>}
         {isMobile&&<NavBarMobile page={page} setPage={setPage}/>}
       </div>
     </>
