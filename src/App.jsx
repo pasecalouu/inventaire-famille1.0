@@ -798,12 +798,15 @@ function PageMenu({products,recettes,menuSemaine,isMobile}){
 
 // ── Page Liste de Courses ────────────────────
 function PageCourses({products,pieces,isMobile}){
-  const [liste,setListe]=useState([]); // [{id,nom,categorie,quantite,unite,qteType,piece,checked,source}]
+  const [liste,setListe]=useState([]);
   const [coursesDB,setCoursesDB]=useState([]);
   const [showAdd,setShowAdd]=useState(false);
+  const [addMode,setAddMode]=useState("inventaire"); // "inventaire" | "nouveau"
+  const [searchAdd,setSearchAdd]=useState("");
   const [newItem,setNewItem]=useState({nom:"",categorie:CATEGORIES[0],quantite:1,unite:"unité",qteType:"entier",fracPart:0,piece:pieces[0]||""});
   const [filterCat,setFilterCat]=useState("Toutes");
   const [showImport,setShowImport]=useState(false);
+  const [newFrac,setNewFrac]=useState(0);
 
   // Écoute Firebase pour la liste de courses partagée
   useEffect(()=>{
@@ -826,6 +829,12 @@ function PageCourses({products,pieces,isMobile}){
     await setDoc(doc(db,"courses",item.id),item);
     setNewItem({nom:"",categorie:CATEGORIES[0],quantite:1,unite:"unité",qteType:"entier",fracPart:0,piece:pieces[0]||""});
     setShowAdd(false);
+  };
+
+  // Ajouter depuis l'inventaire existant
+  const addFromInventaire=async(p)=>{
+    const item={id:mkId(),nom:p.nom,categorie:p.categorie,quantite:1,unite:p.unite||"unité",qteType:p.qteType||"entier",piece:p.piece||pieces[0]||"",checked:false,source:"inventaire"};
+    await setDoc(doc(db,"courses",item.id),item);
   };
 
   // Importer les produits manquants
@@ -888,8 +897,6 @@ function PageCourses({products,pieces,isMobile}){
   const nonCoches=filtered.filter(c=>!c.checked);
   const coches=filtered.filter(c=>c.checked);
   const nbCoches=coursesDB.filter(c=>c.checked).length;
-
-  const [newFrac,setNewFrac]=useState(0);
 
   return(
     <div style={{paddingBottom:isMobile?90:0}}>
@@ -1010,28 +1017,69 @@ function PageCourses({products,pieces,isMobile}){
         )}
       </div>
 
-      {/* Modal ajout manuel */}
-      <Modal open={showAdd} onClose={()=>setShowAdd(false)} title="➕ Ajouter un article">
+      {/* Modal ajout — choisir depuis inventaire OU nouveau */}
+      <Modal open={showAdd} onClose={()=>{setShowAdd(false);setAddMode("inventaire");setSearchAdd("");}} title="➕ Ajouter un article">
         <div>
-          <div style={{display:"flex",alignItems:"center",gap:14,background:"#fff7ed",border:"1.5px solid #fed7aa",borderRadius:14,padding:"12px 16px",marginBottom:16}}>
-            <div style={{fontSize:40}}>{getEmoji(newItem.categorie)}</div>
-            <div style={{fontWeight:700,fontSize:15,color:"#1e293b",fontFamily:F}}>{newItem.nom||"Nom de l'article"}</div>
+          {/* Sélecteur de mode */}
+          <div style={{display:"flex",gap:6,background:"#f1f5f9",borderRadius:12,padding:4,marginBottom:18}}>
+            {[{v:"inventaire",l:"📦 Depuis l'inventaire"},{v:"nouveau",l:"✏️ Nouvel article"}].map(m=>(
+              <button key={m.v} onClick={()=>setAddMode(m.v)} style={{flex:1,border:"none",borderRadius:10,padding:"10px 0",cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:F,background:addMode===m.v?"#fff":"transparent",color:addMode===m.v?"#1e293b":"#64748b",boxShadow:addMode===m.v?"0 1px 4px rgba(0,0,0,0.1)":"none"}}>{m.l}</button>
+            ))}
           </div>
-          <Lbl label="Nom *"><input style={iS} value={newItem.nom} onChange={e=>setNewItem(x=>({...x,nom:e.target.value}))} placeholder="Ex : Lait, Pain, Shampoing..."/></Lbl>
-          <Lbl label="Catégorie"><select style={iS} value={newItem.categorie} onChange={e=>setNewItem(x=>({...x,categorie:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Lbl>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-            <Lbl label="Type"><select style={iS} value={newItem.qteType} onChange={e=>setNewItem(x=>({...x,qteType:e.target.value}))}>{QUANTITE_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}</select></Lbl>
-            <Lbl label="Unité"><select style={iS} value={newItem.unite} onChange={e=>setNewItem(x=>({...x,unite:e.target.value}))}>{UNITES.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select></Lbl>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:newItem.qteType==="fraction"?"1fr 1fr":"1fr",gap:12}}>
-            <Lbl label="Quantité"><input style={iS} type="number" min="0" value={newItem.quantite} onChange={e=>setNewItem(x=>({...x,quantite:e.target.value}))}/></Lbl>
-            {newItem.qteType==="fraction"&&<Lbl label="Fraction"><select style={iS} value={newFrac} onChange={e=>setNewFrac(e.target.value)}><option value={0}>Aucune</option>{FRACTIONS.map(x=><option key={x.label} value={x.value}>{x.label}</option>)}</select></Lbl>}
-          </div>
-          <Lbl label="Pièce de destination"><select style={iS} value={newItem.piece} onChange={e=>setNewItem(x=>({...x,piece:e.target.value}))}>{pieces.map(p=><option key={p}>{p}</option>)}</select></Lbl>
-          <div style={{display:"flex",gap:10,marginTop:8}}>
-            <button onClick={addItem} style={{...btnP,background:"linear-gradient(135deg,#ea580c,#dc2626)"}}>✅ Ajouter à la liste</button>
-            <button onClick={()=>setShowAdd(false)} style={btnS}>Annuler</button>
-          </div>
+
+          {addMode==="inventaire"?(
+            /* ── Mode : choisir depuis l'inventaire ── */
+            <div>
+              <input style={{...iS,marginBottom:12}} placeholder="🔍 Rechercher dans l'inventaire..." value={searchAdd} onChange={e=>setSearchAdd(e.target.value)} autoFocus/>
+              {products.length===0?(
+                <div style={{textAlign:"center",padding:"30px 0",color:"#94a3b8",fontFamily:F}}>Votre inventaire est vide</div>
+              ):(
+                <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:380,overflowY:"auto"}}>
+                  {products.filter(p=>!searchAdd||p.nom?.toLowerCase().includes(searchAdd.toLowerCase())).map(p=>{
+                    const dejaListe=coursesDB.find(c=>c.nom===p.nom&&!c.checked);
+                    return(
+                      <div key={p.id} style={{display:"flex",alignItems:"center",gap:12,background:"#fff",border:"1.5px solid #e2e8f0",borderRadius:12,padding:"12px 14px"}}>
+                        <div style={{width:42,height:42,background:"linear-gradient(135deg,#f0fdf4,#dcfce7)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0}}>{getEmoji(p.categorie)}</div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:700,fontSize:14,color:"#1e293b",fontFamily:F}}>{p.nom}</div>
+                          <div style={{fontSize:12,color:"#64748b",fontFamily:F}}>Stock : <span style={{fontWeight:600,color:p.quantite<=0?"#ef4444":p.seuilAlerte&&p.quantite<=parseFloat(p.seuilAlerte)?"#f97316":"#16a34a"}}>{formatQte(p.quantite,p.unite,p.qteType)}</span></div>
+                        </div>
+                        {dejaListe?(
+                          <span style={{background:"#dbeafe",color:"#1e40af",borderRadius:8,padding:"5px 10px",fontSize:12,fontWeight:600,fontFamily:F,whiteSpace:"nowrap"}}>Déjà dans la liste</span>
+                        ):(
+                          <button onClick={()=>addFromInventaire(p)} style={{background:"linear-gradient(135deg,#ea580c,#dc2626)",color:"#fff",border:"none",borderRadius:10,padding:"7px 14px",cursor:"pointer",fontWeight:700,fontSize:13,fontFamily:F,whiteSpace:"nowrap"}}>+ Ajouter</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <button onClick={()=>setShowAdd(false)} style={{...btnS,marginTop:14}}>Fermer</button>
+            </div>
+          ):(
+            /* ── Mode : nouvel article ── */
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:14,background:"#fff7ed",border:"1.5px solid #fed7aa",borderRadius:14,padding:"12px 16px",marginBottom:16}}>
+                <div style={{fontSize:40}}>{getEmoji(newItem.categorie)}</div>
+                <div style={{fontWeight:700,fontSize:15,color:"#1e293b",fontFamily:F}}>{newItem.nom||"Nom de l'article"}</div>
+              </div>
+              <Lbl label="Nom *"><input style={iS} value={newItem.nom} onChange={e=>setNewItem(x=>({...x,nom:e.target.value}))} placeholder="Ex : Lait, Pain, Shampoing..."/></Lbl>
+              <Lbl label="Catégorie"><select style={iS} value={newItem.categorie} onChange={e=>setNewItem(x=>({...x,categorie:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></Lbl>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <Lbl label="Type"><select style={iS} value={newItem.qteType} onChange={e=>setNewItem(x=>({...x,qteType:e.target.value}))}>{QUANTITE_TYPES.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}</select></Lbl>
+                <Lbl label="Unité"><select style={iS} value={newItem.unite} onChange={e=>setNewItem(x=>({...x,unite:e.target.value}))}>{UNITES.map(u=><option key={u.value} value={u.value}>{u.label}</option>)}</select></Lbl>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:newItem.qteType==="fraction"?"1fr 1fr":"1fr",gap:12}}>
+                <Lbl label="Quantité"><input style={iS} type="number" min="0" value={newItem.quantite} onChange={e=>setNewItem(x=>({...x,quantite:e.target.value}))}/></Lbl>
+                {newItem.qteType==="fraction"&&<Lbl label="Fraction"><select style={iS} value={newFrac} onChange={e=>setNewFrac(e.target.value)}><option value={0}>Aucune</option>{FRACTIONS.map(x=><option key={x.label} value={x.value}>{x.label}</option>)}</select></Lbl>}
+              </div>
+              <Lbl label="Pièce de destination"><select style={iS} value={newItem.piece} onChange={e=>setNewItem(x=>({...x,piece:e.target.value}))}>{pieces.map(p=><option key={p}>{p}</option>)}</select></Lbl>
+              <div style={{display:"flex",gap:10,marginTop:8}}>
+                <button onClick={addItem} style={{...btnP,background:"linear-gradient(135deg,#ea580c,#dc2626)"}}>✅ Ajouter à la liste</button>
+                <button onClick={()=>setShowAdd(false)} style={btnS}>Annuler</button>
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
 
